@@ -1,4 +1,4 @@
-{% load staticfiles %}
+{% load static %}
 
 <script type="text/javascript">
 	/*
@@ -26,10 +26,12 @@
 
 	// Phaser 3.0 global settings. 
 	// Configuration meant to be passed to the main Phaser game instance. 
+	const VIEWPORT_WIDTH = Math.max(1000, Math.floor(window.innerWidth * 0.98));
+	const VIEWPORT_HEIGHT = Math.max(800, Math.floor(window.innerHeight * 0.92));
 	const config = {
 	  type: Phaser.AUTO,
-	  width: 1500,
-	  height: 800,
+	  width: VIEWPORT_WIDTH,
+	  height: VIEWPORT_HEIGHT,
 	  parent: "game-container",
 	  pixelArt: true,
 	  physics: {
@@ -39,8 +41,7 @@
 	  scene: {
 	    preload: preload,
 	    create: create,
-	    update: update },
-	  scale: {zoom: 0.8} };
+	    update: update } };
 
 	// const config = {
 	//   type: Phaser.AUTO,
@@ -92,9 +93,72 @@
 	let movement_target = {};
 	let all_movement = {{ all_movement|safe }};
 
-  let start_datetime =new Date(Date.parse("{{start_datetime}}"));
+  const initial_step = step;
+  const base_datetime = new Date(Date.parse("{{start_datetime}}"));
+  let start_datetime = new Date(base_datetime.getTime());
   var datetime_options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
  	document.getElementById("game-time-content").innerHTML = start_datetime.toLocaleTimeString("en-US", datetime_options);
+	const step_slider = document.getElementById("step-slider");
+	const step_indicator = document.getElementById("step-indicator");
+
+	function get_datetime_for_step(target_step) {
+		return new Date(base_datetime.getTime() + (target_step - initial_step) * step_size);
+	}
+
+	function update_step_ui(target_step) {
+		if (step_slider) {
+			step_slider.value = target_step;
+		}
+		if (step_indicator) {
+			step_indicator.innerHTML = target_step;
+		}
+	}
+
+	function render_step_snapshot(target_step) {
+		if (!(target_step in all_movement)) return;
+		const snapshot = all_movement[target_step];
+		for (let i = 0; i < Object.keys(personas).length; i++) {
+			let curr_persona_name = Object.keys(personas)[i];
+			let curr_persona = personas[curr_persona_name];
+			let curr_pronunciatio = pronunciatios[curr_persona_name];
+			let curr_speech_bubble = speech_bubbles[curr_persona_name];
+			let movement_data = snapshot[curr_persona_name.replace("_", " ")];
+			if (!movement_data || !movement_data["movement"]) continue;
+
+			curr_persona.body.x = movement_data["movement"][0] * tile_width;
+			curr_persona.body.y = movement_data["movement"][1] * tile_width;
+			movement_target[curr_persona_name] = [curr_persona.body.x, curr_persona.body.y];
+			curr_speech_bubble.x = curr_persona.body.x + 80;
+			curr_speech_bubble.y = curr_persona.body.y - 39;
+			curr_pronunciatio.x = curr_persona.body.x + 18;
+			curr_pronunciatio.y = curr_persona.body.y - 42 - 25;
+
+			let pronunciatio_content = movement_data["pronunciatio"] || "";
+			let description_content = movement_data["description"] || "";
+			let chat_content_raw = movement_data["chat"];
+			let chat_content = "<em>None at the moment</em>";
+			if (chat_content_raw != null) {
+				chat_content = "";
+				for (let j = 0; j < chat_content_raw.length; j++) {
+					chat_content += chat_content_raw[j][0] + ": " + chat_content_raw[j][1] + "<br>";
+				}
+			}
+
+			let rgx = new RegExp(/(\p{L}{1})\p{L}+/, 'gu');
+			let initials = [...curr_persona_name.matchAll(rgx)] || [];
+			initials = ((initials.shift()?.[1] || '') + (initials.pop()?.[1] || '')).toUpperCase();
+			curr_pronunciatio.setText(initials + ": " + pronunciatio_content);
+
+			document.getElementById("quick_emoji-" + curr_persona_name).innerHTML = pronunciatio_content;
+			document.getElementById("current_action__" + curr_persona_name).innerHTML = description_content.split("@")[0] || "";
+			document.getElementById("target_address__" + curr_persona_name).innerHTML = description_content.split("@")[1] || "";
+			document.getElementById("chat__" + curr_persona_name).innerHTML = chat_content;
+		}
+
+		start_datetime = get_datetime_for_step(target_step);
+		document.getElementById("game-time-content").innerHTML = start_datetime.toLocaleTimeString("en-US", datetime_options);
+		update_step_ui(target_step);
+	}
  	
 
 	// ###########################################################################
@@ -240,6 +304,43 @@
 	  foregroundL1Layer.setDepth(2);
 	  foregroundL2Layer.setDepth(2);
 
+	  // Compute bounds from non-empty tiles so zoom fits actual drawn map content.
+	  let content_min_x = Number.MAX_SAFE_INTEGER;
+	  let content_min_y = Number.MAX_SAFE_INTEGER;
+	  let content_max_x = -1;
+	  let content_max_y = -1;
+	  const content_layers = [
+	  	bottomGroundLayer, exteriorGroundLayer, exteriorDecorationL1Layer,
+	  	exteriorDecorationL2Layer, interiorGroundLayer, wallLayer,
+	  	interiorFurnitureL1Layer, interiorFurnitureL2Layer,
+	  	foregroundL1Layer, foregroundL2Layer
+	  ];
+	  for (let li = 0; li < content_layers.length; li++) {
+	  	const curr_layer = content_layers[li];
+	  	curr_layer.forEachTile(function(tile) {
+	  		if (tile && tile.index !== -1) {
+	  			content_min_x = Math.min(content_min_x, tile.x);
+	  			content_min_y = Math.min(content_min_y, tile.y);
+	  			content_max_x = Math.max(content_max_x, tile.x);
+	  			content_max_y = Math.max(content_max_y, tile.y);
+	  		}
+	  	}, this, 0, 0, map.width, map.height);
+	  }
+	  let content_bounds = {
+	  	x: 0,
+	  	y: 0,
+	  	width: map.widthInPixels,
+	  	height: map.heightInPixels
+	  };
+	  if (content_max_x >= content_min_x && content_max_y >= content_min_y) {
+	  	content_bounds = {
+	  		x: content_min_x * tile_width,
+	  		y: content_min_y * tile_width,
+	  		width: (content_max_x - content_min_x + 1) * tile_width,
+	  		height: (content_max_y - content_min_y + 1) * tile_width
+	  	};
+	  }
+
 	  // *** SET UP CAMERA *** 
 	  // "player" is to be set as the center of mass for our "camera." We 
 	  // basically create a game character sprite as we would for our personas 
@@ -249,8 +350,17 @@
 	  // OLD NOTE: Create a sprite with physics enabled via the physics system. 
 	  // The image  used for the sprite has a bit of whitespace, so I'm using 
 	  // setSize & setOffset to control the size of the player's body.
+	  let initial_player_x = Math.floor(content_bounds.x + (content_bounds.width / 2));
+	  let initial_player_y = Math.floor(content_bounds.y + (content_bounds.height / 2));
+	  const persona_keys = Object.keys(spawn_tile_loc);
+	  if (persona_keys.length > 0) {
+	    const first_persona_tile = spawn_tile_loc[persona_keys[0]];
+	    initial_player_x = first_persona_tile[0] * tile_width + tile_width / 2;
+	    initial_player_y = first_persona_tile[1] * tile_width + tile_width;
+	  }
+
 	  player = this.physics.add.
-	                sprite(2400, 588, "atlas", "down").
+	                sprite(initial_player_x, initial_player_y, "atlas", "down").
 	                setSize(30, 40).
 	                setOffset(0, 0);
 	  player.setDepth(-1);
@@ -258,7 +368,84 @@
 	  const camera = this.cameras.main;
 	  camera.startFollow(player);
 	  camera.setBounds(0, 0, map.widthInPixels, map.heightInPixels);
+	  camera.setBackgroundColor("#9bd97c");
+	  // Make canvas as large as possible - use full viewport.
+	  const canvas_width = VIEWPORT_WIDTH;
+	  const canvas_height = VIEWPORT_HEIGHT;
+	  this.scale.resize(canvas_width, canvas_height);
+	  // Fit the entire map content into the canvas.
+	  const fit_zoom_x = canvas_width / content_bounds.width;
+	  const fit_zoom_y = canvas_height / content_bounds.height;
+	  const fit_zoom = Math.min(fit_zoom_x, fit_zoom_y);
+	  camera.setZoom(fit_zoom * 1.0);
+	  if (step_slider) {
+	  	step_slider.min = initial_step;
+	  	step_slider.max = Math.max(...Object.keys(all_movement).map(Number));
+	  	step_slider.step = 1;
+	  	step_slider.value = step;
+	  	step_slider.addEventListener("input", function() {
+	  		game.scene.scenes[0].scene.pause();
+	  		step = parseInt(step_slider.value);
+	  		execute_count = execute_count_max;
+	  		render_step_snapshot(step);
+	  	});
+	  }
+	  update_step_ui(step);
 	  cursors = this.input.keyboard.createCursorKeys();
+
+	  // *** SET UP ZOOM AND PAN CONTROLS ***
+	  // Mouse wheel zoom - DOM event so it works when scene is paused
+	  const canvasEl = this.game.canvas;
+	  canvasEl.addEventListener('wheel', function (e) {
+	  	e.preventDefault();
+	  	const zoomChange = e.deltaY > 0 ? -0.1 : 0.1;
+	  	const newZoom = Phaser.Math.Clamp(camera.zoom + zoomChange, 0.3, 3.0);
+	  	camera.setZoom(newZoom);
+	  }, { passive: false });
+
+	  // Drag to pan (left-click)
+	  let isDragging = false;
+	  let dragStartX = 0;
+	  let dragStartY = 0;
+	  let cameraStartX = 0;
+	  let cameraStartY = 0;
+	  const canvas = this.game.canvas;
+
+	  this.input.on('pointerdown', function (pointer) {
+	  	if (pointer.leftButtonDown()) {
+	  		isDragging = true;
+	  		camera.stopFollow();
+	  		dragStartX = pointer.x;
+	  		dragStartY = pointer.y;
+	  		cameraStartX = camera.scrollX;
+	  		cameraStartY = camera.scrollY;
+	  		canvas.style.cursor = 'grab';
+	  	}
+	  });
+
+	  this.input.on('pointermove', function (pointer) {
+	  	if (isDragging && pointer.isDown) {
+	  		const deltaX = (pointer.x - dragStartX) / camera.zoom;
+	  		const deltaY = (pointer.y - dragStartY) / camera.zoom;
+	  		camera.setScroll(
+	  			cameraStartX + (dragStartX - pointer.x) / camera.zoom,
+	  			cameraStartY + (dragStartY - pointer.y) / camera.zoom
+	  		);
+	  		canvas.style.cursor = 'grabbing';
+	  	} else if (!isDragging) {
+	  		canvas.style.cursor = 'grab';
+	  	}
+	  });
+
+	  function onPointerUp() {
+	  	if (isDragging) {
+	  		isDragging = false;
+	  		// Do not resume follow - keep camera where user panned
+	  		canvas.style.cursor = 'grab';
+	  	}
+	  }
+	  this.input.on('pointerup', onPointerUp);
+	  this.input.on('pointerupoutside', onPointerUp);
 
 	  // *** SET UP PERSONAS *** 
 	  // We start by creating the game sprite objects. 
@@ -273,6 +460,7 @@
 	    // Scale up the sprite
       new_sprite.displayWidth = 40;
       new_sprite.scaleY = new_sprite.scaleX;
+      new_sprite.setDepth(3);
 
 	    // Here, we are creating the persona and its pronunciatio sprites.
 	    personas[persona_name] = new_sprite;
@@ -332,6 +520,30 @@
 
 
 	function update(time, delta) {
+		// *** CHECK FOR CHARACTER FOCUS REQUEST ***
+		const temp_focus_elem = document.getElementById('temp_focus');
+		if (temp_focus_elem && temp_focus_elem.innerHTML) {
+			const focus_persona = temp_focus_elem.innerHTML.trim();
+			temp_focus_elem.innerHTML = ''; // Clear the request
+			console.log('Focus request for:', focus_persona);
+			console.log('Available personas:', Object.keys(personas));
+			if (focus_persona && personas[focus_persona]) {
+				console.log('Found persona sprite, focusing...');
+				const camera = this.cameras.main;
+				const sprite = personas[focus_persona];
+				// Smoothly pan to character and zoom in
+				camera.stopFollow();
+				camera.pan(sprite.x, sprite.y, 500, 'Power2');
+				camera.zoomTo(2.0, 500);
+				// After animation, follow the character
+				setTimeout(() => {
+					camera.startFollow(sprite, false, 0.1, 0.1);
+				}, 500);
+			} else if (focus_persona) {
+				console.error('Persona not found in personas object:', focus_persona);
+			}
+		}
+
 		// *** SETUP PLAY AND PAUSE BUTTON *** 
 		let play_context = this;
 		function game_resume() {  
@@ -372,6 +584,7 @@
 	  if (curr_focused_persona != "") {
 	  	player.body.x = personas[curr_focused_persona].body.x;
 	  	player.body.y = personas[curr_focused_persona].body.y;
+	  	this.cameras.main.centerOn(player.body.x, player.body.y);
 	  	document.getElementById("temp_focus").innerHTML = "";
 	  }
 
@@ -483,9 +696,14 @@
 	    }
 			execute_count = execute_count_max + 1;
 	    step = step + 1;
+	    if (!(step in all_movement)) {
+	    	step = Math.max(...Object.keys(all_movement).map(Number));
+	    	play_context.scene.pause();
+	    }
 
-	    start_datetime = new Date(start_datetime.getTime() + step_size);
+	    start_datetime = get_datetime_for_step(step);
  			document.getElementById("game-time-content").innerHTML = start_datetime.toLocaleTimeString("en-US", datetime_options);
+	    update_step_ui(step);
     }
 
 	  execute_count -= 1;

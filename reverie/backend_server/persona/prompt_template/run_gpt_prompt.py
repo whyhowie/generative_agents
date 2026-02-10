@@ -361,22 +361,28 @@ def run_gpt_prompt_task_decomp(persona,
     print (gpt_response)
     print ("-==- -==- -==- ")
 
-    # TODO SOMETHING HERE sometimes fails... See screenshot
-    temp = [i.strip() for i in gpt_response.split("\n")]
-    _cr = []
+    # Gemini output can vary in formatting (bullets/numbering/newlines).
+    # Parse robustly instead of relying on fixed token positions.
+    temp = [i.strip() for i in gpt_response.split("\n") if i.strip()]
     cr = []
-    for count, i in enumerate(temp): 
-      if count != 0: 
-        _cr += [" ".join([j.strip () for j in i.split(" ")][3:])]
-      else: 
-        _cr += [i]
-    for count, i in enumerate(_cr): 
-      k = [j.strip() for j in i.split("(duration in minutes:")]
-      task = k[0]
-      if task[-1] == ".": 
-        task = task[:-1]
-      duration = int(k[1].split(",")[0].strip())
+    for raw_line in temp:
+      line = re.sub(r"^\s*(?:[-*]|\d+[.)]|[A-Za-z]\)|\(\d+\))\s*", "", raw_line)
+      match = re.search(r"\(\s*duration in minutes\s*:\s*(\d+)", line, flags=re.IGNORECASE)
+      if not match:
+        continue
+
+      task = line[:match.start()].strip()
+      task = re.sub(r"[:\-–\s]+$", "", task)
+      if not task:
+        continue
+
+      duration = int(match.group(1))
+      if duration <= 0:
+        continue
       cr += [[task, duration]]
+
+    if not cr:
+      raise ValueError("Could not parse any task decomposition lines from model output.")
 
     total_expected_min = int(prompt.split("(total duration in minutes")[-1]
                                    .split("):")[0].strip())
@@ -395,7 +401,7 @@ def run_gpt_prompt_task_decomp(persona,
     curr_min_slot = curr_min_slot[1:]   
 
     if len(curr_min_slot) > total_expected_min: 
-      last_task = curr_min_slot[60]
+      last_task = curr_min_slot[-1]
       for i in range(1, 6): 
         curr_min_slot[-1 * i] = last_task
     elif len(curr_min_slot) < total_expected_min: 
@@ -414,16 +420,15 @@ def run_gpt_prompt_task_decomp(persona,
     return cr
 
   def __func_validate(gpt_response, prompt=""): 
-    # TODO -- this sometimes generates error 
+    # Retry when model output cannot be parsed yet.
     try: 
-      __func_clean_up(gpt_response)
-    except: 
-      pass
-      # return False
-    return gpt_response
+      __func_clean_up(gpt_response, prompt=prompt)
+      return True
+    except Exception:
+      return False
 
   def get_fail_safe(): 
-    fs = ["asleep"]
+    fs = [["asleep", duration]]
     return fs
 
   gpt_param = {"engine": "text-davinci-003", "max_tokens": 1000, 

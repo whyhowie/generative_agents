@@ -14,7 +14,6 @@ from django.shortcuts import render, redirect, HttpResponseRedirect
 from django.http import HttpResponse, JsonResponse
 from global_methods import *
 
-from django.contrib.staticfiles.templatetags.staticfiles import static
 from .models import *
 
 def landing(request): 
@@ -144,6 +143,7 @@ def home(request):
              "step": step, 
              "persona_names": persona_names,
              "persona_init_pos": persona_init_pos,
+             "max_step": max(file_count) if file_count else step,
              "mode": "simulate"}
   template = "home/home.html"
   return render(request, template, context)
@@ -174,10 +174,19 @@ def replay(request, sim_code, step):
       if key in persona_names_set: 
         persona_init_pos += [[key, val["x"], val["y"]]]
 
+  movement_file_count = []
+  for i in find_filenames(f"storage/{sim_code}/movement", ".json"):
+    x = i.split("/")[-1].strip()
+    if x and x[0] != ".": 
+      movement_file_count += [int(x.split(".")[0])]
+
+  max_step = max(movement_file_count) if movement_file_count else (max(file_count) if file_count else step)
+
   context = {"sim_code": sim_code,
              "step": step,
              "persona_names": persona_names,
              "persona_init_pos": persona_init_pos, 
+             "max_step": max_step,
              "mode": "replay"}
   template = "home/home.html"
   return render(request, template, context)

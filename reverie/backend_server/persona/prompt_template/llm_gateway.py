@@ -28,7 +28,7 @@ def _get_default_model(provider: str) -> str:
     return utils_model
   if provider == "openai":
     return "gpt-3.5-turbo"
-  return "gemini-1.5-pro"
+  return "gemini-2.5-flash"
 
 
 def _get_default_embedding_model(provider: str) -> str:
@@ -40,7 +40,34 @@ def _get_default_embedding_model(provider: str) -> str:
     return utils_model
   if provider == "openai":
     return "text-embedding-ada-002"
-  return "text-embedding-004"
+  # "text-embedding-004" is not available in some Gemini API versions/accounts.
+  return "embedding-001"
+
+
+def _resolve_model_for_provider(provider: str, model: Optional[str], *, embedding: bool = False) -> str:
+  default_model = _get_default_embedding_model(provider) if embedding else _get_default_model(provider)
+  if not model:
+    return default_model
+
+  model = str(model).strip()
+  if not model:
+    return default_model
+
+  # Legacy prompt templates pass OpenAI model names; map those to provider defaults.
+  openai_like_prefixes = ("text-", "davinci", "curie", "gpt-")
+  gemini_like_prefixes = ("gemini", "models/gemini")
+
+  if provider == "gemini":
+    if model.startswith(openai_like_prefixes):
+      return default_model
+    return model
+
+  if provider == "openai":
+    if model.startswith(gemini_like_prefixes):
+      return default_model
+    return model
+
+  return model
 
 
 def _normalize_params(params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -137,7 +164,7 @@ def _gemini_request(prompt: str, model: str, params: Dict[str, Any]) -> str:
 
 def llm_request(prompt: str, model: Optional[str] = None, params: Optional[Dict[str, Any]] = None) -> str:
   provider = _get_provider()
-  model = model or _get_default_model(provider)
+  model = _resolve_model_for_provider(provider, model, embedding=False)
   params = _normalize_params(params)
 
   if provider == "openai":
@@ -150,7 +177,7 @@ def llm_request(prompt: str, model: Optional[str] = None, params: Optional[Dict[
 
 def llm_embedding(text: str, model: Optional[str] = None) -> list:
   provider = _get_provider()
-  model = model or _get_default_embedding_model(provider)
+  model = _resolve_model_for_provider(provider, model, embedding=True)
 
   if provider == "openai":
     import openai
@@ -166,7 +193,19 @@ def llm_embedding(text: str, model: Optional[str] = None) -> list:
     if not api_key:
       raise ValueError("Gemini API key is missing. Set GEMINI_API_KEY or gemini_api_key.")
     client = genai.Client(api_key=api_key)
-    response = client.models.embed_content(model=model, contents=[text])
-    return response.embeddings[0].values
+    # Try user/default choice first, then known compatible Gemini aliases.
+    candidates = [model]
+    for fallback in ("embedding-001", "gemini-embedding-001"):
+      if fallback not in candidates:
+        candidates.append(fallback)
+
+    last_error = None
+    for candidate in candidates:
+      try:
+        response = client.models.embed_content(model=candidate, contents=[text])
+        return response.embeddings[0].values
+      except Exception as exc:
+        last_error = exc
+    raise last_error
 
   raise ValueError(f"Unsupported LLM provider: {provider}")

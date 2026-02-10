@@ -39,6 +39,20 @@ class MemoryTree:
     with open(out_json, "w") as outfile:
       json.dump(self.tree, outfile) 
 
+  def _get_dict_value_ci(self, data, key):
+    """
+    Return a dict value by exact key first, then case-insensitive lookup.
+    """
+    if not isinstance(data, dict):
+      return None
+    if key in data:
+      return data[key]
+    key_lower = str(key).lower()
+    for k, v in data.items():
+      if str(k).lower() == key_lower:
+        return v
+    return None
+
 
 
   def get_str_accessible_sectors(self, curr_world): 
@@ -101,11 +115,19 @@ class MemoryTree:
     if not curr_arena: 
       return ""
 
-    try: 
-      x = ", ".join(list(self.tree[curr_world][curr_sector][curr_arena]))
-    except: 
-      x = ", ".join(list(self.tree[curr_world][curr_sector][curr_arena.lower()]))
-    return x
+    world_tree = self._get_dict_value_ci(self.tree, curr_world)
+    sector_tree = self._get_dict_value_ci(world_tree, curr_sector)
+    arena_objects = self._get_dict_value_ci(sector_tree, curr_arena)
+
+    if not arena_objects:
+      return ""
+
+    if isinstance(arena_objects, dict):
+      return ", ".join(list(arena_objects.keys()))
+    if isinstance(arena_objects, list):
+      return ", ".join([str(i) for i in arena_objects])
+
+    return str(arena_objects)
 
 
 if __name__ == '__main__':

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load staticfiles %}
+{% load static %}
 
 {% block content %}
 <br>
@@ -27,6 +27,12 @@
 				    <strong style=" font-size:1.2em"><i class="glyphicon glyphicon-pause"></i> &nbsp;Pause</strong>
 				  </button>
 				</h2>
+			</div>
+		</div>
+		<div class="row" style="margin-top:0.8em;">
+			<div class="col-md-12">
+				<input id="step-slider" type="range" min="0" max="0" value="{{step}}" style="width:100%">
+				<div style="text-align:right; color:#666;">Step: <span id="step-indicator">{{step}}</span></div>
 			</div>
 		</div>
 

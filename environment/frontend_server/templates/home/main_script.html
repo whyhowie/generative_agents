@@ -1,7 +1,9 @@
-{% load staticfiles %}
+{% load static %}
 
 <div id="step" style="display:none">{{step}}</div>
 <div id="sim_code" style="display:none">{{sim_code}}</div>
+<div id="mode" style="display:none">{{mode}}</div>
+<div id="max_step" style="display:none">{{max_step|default:step}}</div>
 <div id="persona_name_list" style="display:none">{{persona_name_str}}</div>
 <div id="persona_init_pos" style="display:none">
 	{% for i in persona_init_pos %}
@@ -31,6 +33,10 @@
 	// a step. We use this to link the steps in the backend. 
 	let step = parseInt(document.getElementById('step').innerHTML);
 	let sim_code = document.getElementById('sim_code').innerHTML;
+	const mode = document.getElementById('mode').innerHTML;
+	const replay_mode = (mode === "replay");
+	const max_step_from_context = parseInt(document.getElementById('max_step').innerHTML || step);
+	const ZOOM_FILL_MULTIPLIER = 1.0;
 	// let persona_names = document.getElementById('persona_name_list').innerHTML.split(",");
 
 	let spans = document.getElementById('persona_init_pos').getElementsByTagName('span');
@@ -43,10 +49,14 @@
 
 	// Phaser 3.0 global settings. 
 	// Configuration meant to be passed to the main Phaser game instance. 
+	const game_container = document.getElementById("game-container");
+	const sim_shell = document.getElementById("sim-shell");
+	const VIEWPORT_WIDTH = Math.max(900, Math.floor(window.innerWidth * 0.98));
+	const VIEWPORT_HEIGHT = Math.max(700, Math.floor(window.innerHeight * 0.95));
 	const config = {
 	  type: Phaser.AUTO,
-	  width: 1500,
-	  height: 800,
+	  width: VIEWPORT_WIDTH,
+	  height: VIEWPORT_HEIGHT,
 	  parent: "game-container",
 	  pixelArt: true,
 	  physics: {
@@ -120,6 +130,19 @@
 	let execute_count_max = tile_width/movement_speed;
 	let execute_count = execute_count_max;
 	let movement_target = {};
+	let active_scene = null;
+	let max_known_step = max_step_from_context;
+	const step_slider = document.getElementById("step-slider");
+	const step_indicator = document.getElementById("step-indicator");
+
+	function update_step_ui(current_step) {
+		if (step_indicator) {
+			step_indicator.innerHTML = current_step;
+		}
+		if (step_slider) {
+			step_slider.value = current_step;
+		}
+	}
 	
 
 	// ###########################################################################
@@ -183,6 +206,7 @@
 	}
 
 	function create() {  
+	  active_scene = this;
 	  const map = this.make.tilemap({ key: "map" });
 	  // Joon: Logging map is really helpful for debugging here: 
 	  //       console.log(map);
@@ -256,6 +280,43 @@
 	  // foregroundL1Layer.setDepth(2);
 	  // foregroundL1Layer.setDepth(2);
 
+	  // Compute bounds from non-empty tiles so zoom fits actual drawn map content.
+	  let content_min_x = Number.MAX_SAFE_INTEGER;
+	  let content_min_y = Number.MAX_SAFE_INTEGER;
+	  let content_max_x = -1;
+	  let content_max_y = -1;
+	  const content_layers = [
+	  	bottomGroundLayer, exteriorGroundLayer, exteriorDecorationL1Layer,
+	  	exteriorDecorationL2Layer, interiorGroundLayer, wallLayer,
+	  	interiorFurnitureL1Layer, interiorFurnitureL2Layer,
+	  	foregroundL1Layer, foregroundL2Layer
+	  ];
+	  for (let li = 0; li < content_layers.length; li++) {
+	  	const curr_layer = content_layers[li];
+	  	curr_layer.forEachTile(function(tile) {
+	  		if (tile && tile.index !== -1) {
+	  			content_min_x = Math.min(content_min_x, tile.x);
+	  			content_min_y = Math.min(content_min_y, tile.y);
+	  			content_max_x = Math.max(content_max_x, tile.x);
+	  			content_max_y = Math.max(content_max_y, tile.y);
+	  		}
+	  	}, this, 0, 0, map.width, map.height);
+	  }
+	  let content_bounds = {
+	  	x: 0,
+	  	y: 0,
+	  	width: map.widthInPixels,
+	  	height: map.heightInPixels
+	  };
+	  if (content_max_x >= content_min_x && content_max_y >= content_min_y) {
+	  	content_bounds = {
+	  		x: content_min_x * tile_width,
+	  		y: content_min_y * tile_width,
+	  		width: (content_max_x - content_min_x + 1) * tile_width,
+	  		height: (content_max_y - content_min_y + 1) * tile_width
+	  	};
+	  }
+
 	  // *** SET UP CAMERA *** 
 	  // "player" is to be set as the center of mass for our "camera." We 
 	  // basically create a game character sprite as we would for our personas 
@@ -265,8 +326,17 @@
 	  // OLD NOTE: Create a sprite with physics enabled via the physics system. 
 	  // The image  used for the sprite has a bit of whitespace, so I'm using 
 	  // setSize & setOffset to control the size of the player's body.
+	  let initial_player_x = Math.floor(content_bounds.x + (content_bounds.width / 2));
+	  let initial_player_y = Math.floor(content_bounds.y + (content_bounds.height / 2));
+	  const persona_keys = Object.keys(spawn_tile_loc);
+	  if (persona_keys.length > 0) {
+	    const first_persona_tile = spawn_tile_loc[persona_keys[0]];
+	    initial_player_x = first_persona_tile[0] * tile_width + tile_width / 2;
+	    initial_player_y = first_persona_tile[1] * tile_width + tile_width;
+	  }
+
 	  player = this.physics.add.
-	                sprite(800, 288, "atlas", "misa-front").
+	                sprite(initial_player_x, initial_player_y, "atlas", "misa-front").
 	                setSize(30, 40).
 	                setOffset(0, 0);
 	  player.setDepth(-1);
@@ -274,7 +344,94 @@
 	  const camera = this.cameras.main;
 	  camera.startFollow(player);
 	  camera.setBounds(0, 0, map.widthInPixels, map.heightInPixels);
+	  camera.setBackgroundColor("#9bd97c");
+	  // Make canvas as large as possible - use full viewport.
+	  const canvas_width = VIEWPORT_WIDTH;
+	  const canvas_height = VIEWPORT_HEIGHT;
+	  this.scale.resize(canvas_width, canvas_height);
+	  if (sim_shell) {
+	  	sim_shell.style.width = canvas_width + "px";
+	  	sim_shell.style.height = canvas_height + "px";
+	  }
+	  if (game_container) {
+	  	game_container.style.width = canvas_width + "px";
+	  	game_container.style.height = canvas_height + "px";
+	  }
+	  // Fit the entire map content into the canvas.
+	  const fit_zoom_x = canvas_width / content_bounds.width;
+	  const fit_zoom_y = canvas_height / content_bounds.height;
+	  const fit_zoom = Math.min(fit_zoom_x, fit_zoom_y);
+	  camera.setZoom(fit_zoom * ZOOM_FILL_MULTIPLIER);
+	  if (replay_mode && step_slider) {
+	  	step_slider.min = 0;
+	  	step_slider.max = max_known_step;
+	  	step_slider.value = step;
+	  	step_slider.addEventListener("input", function() {
+	  		step = parseInt(step_slider.value);
+	  		execute_count = execute_count_max;
+	  		phase = "update";
+	  		timer = 0;
+	  		if (active_scene && active_scene.scene.isPaused()) {
+	  			active_scene.scene.resume();
+	  		}
+	  		document.getElementById("game-time-content").innerHTML = "Seeking...";
+	  		update_step_ui(step);
+	  	});
+	  }
+	  update_step_ui(step);
 	  cursors = this.input.keyboard.createCursorKeys();
+
+	  // *** SET UP ZOOM AND PAN CONTROLS ***
+	  // Mouse wheel zoom - DOM event so it works when scene is paused
+	  const canvasEl = this.game.canvas;
+	  canvasEl.addEventListener('wheel', function (e) {
+	  	e.preventDefault();
+	  	const zoomChange = e.deltaY > 0 ? -0.1 : 0.1;
+	  	const newZoom = Phaser.Math.Clamp(camera.zoom + zoomChange, 0.3, 3.0);
+	  	camera.setZoom(newZoom);
+	  }, { passive: false });
+
+	  // Drag to pan (left-click) - use DOM events so it works when scene is paused
+	  let panDragging = false;
+	  let panStartX = 0;
+	  let panStartY = 0;
+	  let panScrollStartX = 0;
+	  let panScrollStartY = 0;
+
+	  function onPanStart(e) {
+	  	if (e.button !== 0) return;  // left button only
+	  	panDragging = true;
+	  	camera.stopFollow();
+	  	panStartX = e.clientX;
+	  	panStartY = e.clientY;
+	  	panScrollStartX = camera.scrollX;
+	  	panScrollStartY = camera.scrollY;
+	  	canvasEl.style.cursor = 'grab';
+	  }
+	  function onPanMove(e) {
+	  	if (panDragging) {
+	  		camera.setScroll(
+	  			panScrollStartX + (panStartX - e.clientX) / camera.zoom,
+	  			panScrollStartY + (panStartY - e.clientY) / camera.zoom
+	  		);
+	  		canvasEl.style.cursor = 'grabbing';
+	  	} else {
+	  		canvasEl.style.cursor = 'grab';
+	  	}
+	  }
+	  function onPanEnd() {
+	  	if (panDragging) {
+	  		panDragging = false;
+	  		canvasEl.style.cursor = 'grab';
+	  		// Do NOT resume startFollow - keep camera where user panned
+	  	}
+	  }
+
+	  canvasEl.addEventListener('mousedown', onPanStart);
+	  canvasEl.addEventListener('mousemove', onPanMove);
+	  canvasEl.addEventListener('mouseup', onPanEnd);
+	  canvasEl.addEventListener('mouseleave', onPanEnd);
+	  window.addEventListener('mouseup', onPanEnd);
 
 	  // *** SET UP PERSONAS *** 
 	  // We start by creating the game sprite objects. 
@@ -286,6 +443,7 @@
 	                         .sprite(start_pos[0], start_pos[1], "atlas", "misa-front")
 	                         .setSize(30, 40)
 	                         .setOffset(0, 32); // DEBUG 1 --- I added 32 offset on Dec 29. 
+	    new_sprite.setDepth(3);
 	    // Here, we are creating the persona and its pronunciatio sprites.
 	    personas[persona_name] = new_sprite;
 	    pronunciatios[persona_name] = this.add.text(
@@ -330,6 +488,30 @@
 
 
 	function update(time, delta) {
+		// *** CHECK FOR CHARACTER FOCUS REQUEST ***
+		const temp_focus_elem = document.getElementById('temp_focus');
+		if (temp_focus_elem && temp_focus_elem.innerHTML) {
+			const focus_persona = temp_focus_elem.innerHTML.trim();
+			temp_focus_elem.innerHTML = ''; // Clear the request
+			console.log('Focus request for:', focus_persona);
+			console.log('Available personas:', Object.keys(personas));
+			if (focus_persona && personas[focus_persona]) {
+				console.log('Found persona sprite, focusing...');
+				const camera = this.cameras.main;
+				const sprite = personas[focus_persona];
+				// Smoothly pan to character and zoom in
+				camera.stopFollow();
+				camera.pan(sprite.x, sprite.y, 500, 'Power2');
+				camera.zoomTo(2.0, 500);
+				// After animation, follow the character
+				setTimeout(() => {
+					camera.startFollow(sprite, false, 0.1, 0.1);
+				}, 500);
+			} else if (focus_persona) {
+				console.error('Persona not found in personas object:', focus_persona);
+			}
+		}
+
 		// *** SETUP PLAY AND PAUSE BUTTON *** 
 		let play_context = this;
 		function game_resume() {  
@@ -363,6 +545,17 @@
 	  } 
 	  if (cursors.down.isDown) {
 	    player.body.setVelocityY(camera_speed);
+	  }
+
+	  const focus_elem = document.getElementById("temp_focus");
+	  if (focus_elem) {
+	  	let curr_focused_persona = focus_elem.textContent;
+	  	if (curr_focused_persona && personas[curr_focused_persona]) {
+	  		player.body.x = personas[curr_focused_persona].body.x;
+	  		player.body.y = personas[curr_focused_persona].body.y;
+	  		this.cameras.main.centerOn(player.body.x, player.body.y);
+	  		focus_elem.innerHTML = "";
+	  	}
 	  }
 
 	  // console.log("phase: " + phase + ", step: " + step);
@@ -414,6 +607,10 @@
 	          if (update_xobj.status === 200) {
 	            if (JSON.parse(update_xobj.responseText)["<step>"] == step) {
 	              execute_movement = JSON.parse(update_xobj.responseText)
+	              if (replay_mode) {
+	              	max_known_step = Math.max(max_known_step, execute_movement["<step>"]);
+	              	if (step_slider) step_slider.max = max_known_step;
+	              }
 	              phase = "execute";
 	            }
 	            timer = timer_max;
@@ -514,7 +711,12 @@
 	        }
 	        phase = "process";
 	        execute_count = execute_count_max + 1;
-	        step = step + 1;
+	        if (replay_mode && step >= max_known_step) {
+	        	if (active_scene) active_scene.scene.pause();
+	        } else {
+	        	step = step + 1;
+	        }
+	        update_step_ui(step);
 	      }
 	    }
 
